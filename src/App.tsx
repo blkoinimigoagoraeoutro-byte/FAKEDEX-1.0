@@ -15,6 +15,7 @@ import {
   Upload
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { getSupabase } from "./supabaseClient";
 
 interface PokemonStatus {
   hp: number;
@@ -54,9 +55,36 @@ export default function App() {
   }, []);
 
   const fetchPokemons = async () => {
-    const res = await fetch("/api/pokemon");
-    const data = await res.json();
-    setPokemons(data.pokedex_data);
+    const supabase = getSupabase();
+    if (!supabase) {
+      console.warn("Supabase não configurado. Verifique as variáveis de ambiente.");
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from('pokemons')
+      .select('*')
+      .order('id', { ascending: true });
+    
+    if (error) {
+      console.error("Erro ao buscar pokemons:", error);
+      return;
+    }
+
+    const mappedData = (data || []).map((p: any) => ({
+      id: p.id,
+      nome: p.nome,
+      tipos: typeof p.tipos === 'string' ? JSON.parse(p.tipos) : p.tipos,
+      status: {
+        hp: p.hp,
+        attack: p.attack,
+        defense: p.defense
+      },
+      descricao: p.descricao,
+      image_url: p.image_url
+    }));
+
+    setPokemons(mappedData);
   };
 
   const handleSearch = () => {
@@ -141,28 +169,57 @@ export default function App() {
   };
 
   const handleSave = async () => {
-    const method = editForm.id ? "PUT" : "POST";
-    const url = editForm.id ? `/api/pokemon/${editForm.id}` : "/api/pokemon";
-    
-    const res = await fetch(url, {
-      method,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(editForm)
-    });
-    
-    const data = await res.json();
-    
-    if (data.action === "CLOSE_MODAL" && data.status === "SUCCESS") {
-      setPokemons(data.updated_pokedex);
-      setIsEditing(false);
+    const supabase = getSupabase();
+    if (!supabase) {
+      alert("Erro: Supabase não configurado. Configure as chaves no menu Settings.");
+      return;
     }
+
+    const pokemonData = {
+      nome: editForm.nome,
+      tipos: editForm.tipos,
+      hp: editForm.status.hp,
+      attack: editForm.status.attack,
+      defense: editForm.status.defense,
+      descricao: editForm.descricao,
+      image_url: editForm.image_url
+    };
+
+    if (editForm.id) {
+      const { error } = await supabase
+        .from('pokemons')
+        .update(pokemonData)
+        .eq('id', editForm.id);
+      
+      if (error) console.error(error);
+    } else {
+      const { error } = await supabase
+        .from('pokemons')
+        .insert([pokemonData]);
+      
+      if (error) console.error(error);
+    }
+    
+    setIsEditing(false);
+    fetchPokemons();
   };
 
   const handleDelete = async (id: number) => {
     if (profile !== "Gestão") return;
-    const res = await fetch(`/api/pokemon/${id}`, { method: "DELETE" });
-    const data = await res.json();
-    setPokemons(data.pokedex_data);
+    
+    const supabase = getSupabase();
+    if (!supabase) {
+      alert("Erro: Supabase não configurado.");
+      return;
+    }
+
+    const { error } = await supabase
+      .from('pokemons')
+      .delete()
+      .eq('id', id);
+    
+    if (error) console.error(error);
+    fetchPokemons();
   };
 
   return (
@@ -195,6 +252,14 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-8">
+        {!getSupabase() && (
+          <div className="mb-8 p-4 bg-amber-900/20 border border-amber-500/50 rounded-2xl flex items-center gap-3 text-amber-200">
+            <Info className="w-5 h-5" />
+            <p className="text-sm">
+              <strong>Configuração Necessária:</strong> Configure as chaves <code className="bg-black/30 px-1 rounded">VITE_SUPABASE_URL</code> e <code className="bg-black/30 px-1 rounded">VITE_SUPABASE_ANON_KEY</code> no menu <strong>Settings</strong> para ativar o banco de dados.
+            </p>
+          </div>
+        )}
         {/* Search & Actions */}
         <div className="flex flex-col md:flex-row gap-4 mb-8">
           <div className="relative flex-1 group">
