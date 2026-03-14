@@ -1,0 +1,5 @@
+{
+  "name": "Pokédex Inteligente AI",
+  "description": "Uma Pokédex com perfis de Usuário e Gestão, integrando IA para geração de lore e sugestão de atributos.",
+  "requestFramePermissions": []
+}
