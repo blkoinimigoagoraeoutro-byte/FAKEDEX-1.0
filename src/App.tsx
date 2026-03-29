@@ -41,6 +41,7 @@ export default function App() {
   const [selectedPokemon, setSelectedPokemon] = useState<Pokemon | null>(null);
   const [aiDetails, setAiDetails] = useState<string | null>(null);
   const [isAiLoading, setIsAiLoading] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState<Pokemon>({
     nome: "",
@@ -55,36 +56,50 @@ export default function App() {
   }, []);
 
   const fetchPokemons = async () => {
-    const supabase = getSupabase();
-    if (!supabase) {
-      console.warn("Supabase não configurado. Verifique as variáveis de ambiente.");
-      return;
+    try {
+      const supabase = getSupabase();
+      if (!supabase) {
+        console.warn("Supabase não configurado. Verifique as variáveis de ambiente.");
+        // Fallback to API if Supabase client is not ready
+        const res = await fetch("/api/pokemon");
+        if (!res.ok) throw new Error("API fallback failed");
+        const data = await res.json();
+        setPokemons(data.pokedex_data || []);
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from('pokemons')
+        .select('*')
+        .order('id', { ascending: true });
+      
+      if (error) {
+        console.error("Erro ao buscar pokemons via Supabase:", error);
+        // Fallback to API
+        const res = await fetch("/api/pokemon");
+        if (!res.ok) throw new Error("API fallback failed");
+        const data = await res.json();
+        setPokemons(data.pokedex_data || []);
+        return;
+      }
+
+      const mappedData = (data || []).map((p: any) => ({
+        id: p.id,
+        nome: p.nome,
+        tipos: typeof p.tipos === 'string' ? JSON.parse(p.tipos) : p.tipos,
+        status: {
+          hp: p.hp || p.status?.hp || 50,
+          attack: p.attack || p.status?.attack || 50,
+          defense: p.defense || p.status?.defense || 50
+        },
+        descricao: p.descricao,
+        image_url: p.image_url
+      }));
+
+      setPokemons(mappedData);
+    } catch (error) {
+      console.error("Erro ao carregar pokemons:", error);
     }
-
-    const { data, error } = await supabase
-      .from('pokemons')
-      .select('*')
-      .order('id', { ascending: true });
-    
-    if (error) {
-      console.error("Erro ao buscar pokemons:", error);
-      return;
-    }
-
-    const mappedData = (data || []).map((p: any) => ({
-      id: p.id,
-      nome: p.nome,
-      tipos: typeof p.tipos === 'string' ? JSON.parse(p.tipos) : p.tipos,
-      status: {
-        hp: p.hp,
-        attack: p.attack,
-        defense: p.defense
-      },
-      descricao: p.descricao,
-      image_url: p.image_url
-    }));
-
-    setPokemons(mappedData);
   };
 
   const handleSearch = () => {
@@ -145,22 +160,40 @@ export default function App() {
       setEditForm(prev => ({ ...prev, image_url: base64String }));
       
       setIsAiLoading(true);
+      
+      // 3-second timeout for AI analysis
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
+
       try {
         const res = await fetch("/api/ai/analyze-image", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ image: base64String })
+          body: JSON.stringify({ image: base64String }),
+          signal: controller.signal
         });
+        clearTimeout(timeoutId);
         const data = await res.json();
         setEditForm(prev => ({
           ...prev,
-          nome: data.nome,
-          tipos: data.tipos,
-          status: data.status,
-          descricao: data.descricao_ia
+          nome: data.nome || prev.nome,
+          tipos: data.tipos || prev.tipos,
+          status: data.status || { hp: 50, attack: 50, defense: 50 },
+          descricao: data.descricao_ia || "Pokémon identificado via visão computacional."
         }));
-      } catch (error) {
-        console.error(error);
+      } catch (error: any) {
+        if (error.name === 'AbortError') {
+          console.warn("AI Analysis timed out. Using default values.");
+          setEditForm(prev => ({
+            ...prev,
+            nome: "Pokémon Desconhecido",
+            tipos: ["Normal"],
+            status: { hp: 50, attack: 50, defense: 50 },
+            descricao: "Análise da IA excedeu o tempo limite. Dados básicos preenchidos."
+          }));
+        } else {
+          console.error(error);
+        }
       } finally {
         setIsAiLoading(false);
       }
@@ -169,57 +202,49 @@ export default function App() {
   };
 
   const handleSave = async () => {
-    const supabase = getSupabase();
-    if (!supabase) {
-      alert("Erro: Supabase não configurado. Configure as chaves no menu Settings.");
+    if (!editForm.nome) {
+      alert("Por favor, identifique o Pokémon ou insira um nome.");
       return;
     }
-
-    const pokemonData = {
-      nome: editForm.nome,
-      tipos: editForm.tipos,
-      hp: editForm.status.hp,
-      attack: editForm.status.attack,
-      defense: editForm.status.defense,
-      descricao: editForm.descricao,
-      image_url: editForm.image_url
-    };
-
-    if (editForm.id) {
-      const { error } = await supabase
-        .from('pokemons')
-        .update(pokemonData)
-        .eq('id', editForm.id);
+    setIsUploading(true);
+    try {
+      const method = editForm.id ? "PUT" : "POST";
+      const url = editForm.id ? `/api/pokemon/${editForm.id}` : "/api/pokemon";
       
-      if (error) console.error(error);
-    } else {
-      const { error } = await supabase
-        .from('pokemons')
-        .insert([pokemonData]);
+      const res = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(editForm)
+      });
       
-      if (error) console.error(error);
+      const data = await res.json();
+      
+      if (data.status === "SUCCESS") {
+        setIsEditing(false); // Close modal immediately on success
+        fetchPokemons(); // refreshPokedex()
+      } else if (data.error) {
+        alert("Erro ao salvar: " + data.error);
+      }
+    } catch (error) {
+      console.error("Save error:", error);
+      alert("Erro ao conectar com o servidor.");
+    } finally {
+      setIsUploading(false);
     }
-    
-    setIsEditing(false);
-    fetchPokemons();
   };
 
   const handleDelete = async (id: number) => {
     if (profile !== "Gestão") return;
     
-    const supabase = getSupabase();
-    if (!supabase) {
-      alert("Erro: Supabase não configurado.");
-      return;
+    try {
+      const res = await fetch(`/api/pokemon/${id}`, { method: "DELETE" });
+      const data = await res.json();
+      if (data.status === "SUCCESS") {
+        fetchPokemons();
+      }
+    } catch (error) {
+      console.error("Delete error:", error);
     }
-
-    const { error } = await supabase
-      .from('pokemons')
-      .delete()
-      .eq('id', id);
-    
-    if (error) console.error(error);
-    fetchPokemons();
   };
 
   return (
@@ -252,14 +277,6 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-8">
-        {!getSupabase() && (
-          <div className="mb-8 p-4 bg-amber-900/20 border border-amber-500/50 rounded-2xl flex items-center gap-3 text-amber-200">
-            <Info className="w-5 h-5" />
-            <p className="text-sm">
-              <strong>Configuração Necessária:</strong> Configure as chaves <code className="bg-black/30 px-1 rounded">VITE_SUPABASE_URL</code> e <code className="bg-black/30 px-1 rounded">VITE_SUPABASE_ANON_KEY</code> no menu <strong>Settings</strong> para ativar o banco de dados.
-            </p>
-          </div>
-        )}
         {/* Search & Actions */}
         <div className="flex flex-col md:flex-row gap-4 mb-8">
           <div className="relative flex-1 group">
@@ -562,9 +579,17 @@ export default function App() {
                   </button>
                   <button 
                     onClick={handleSave}
-                    className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-3 rounded-xl font-semibold transition-all shadow-lg shadow-emerald-900/20"
+                    disabled={isUploading}
+                    className="flex-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white py-3 rounded-xl font-semibold transition-all shadow-lg shadow-emerald-900/20 flex items-center justify-center gap-2"
                   >
-                    Salvar Pokémon
+                    {isUploading ? (
+                      <>
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                        Salvando...
+                      </>
+                    ) : (
+                      "Salvar Pokémon"
+                    )}
                   </button>
                 </div>
               </div>
